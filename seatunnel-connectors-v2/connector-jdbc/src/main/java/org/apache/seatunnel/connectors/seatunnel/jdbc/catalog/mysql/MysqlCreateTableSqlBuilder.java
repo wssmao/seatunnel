@@ -23,16 +23,22 @@ import org.apache.seatunnel.api.table.catalog.ConstraintKey;
 import org.apache.seatunnel.api.table.catalog.PrimaryKey;
 import org.apache.seatunnel.api.table.catalog.TablePath;
 import org.apache.seatunnel.api.table.catalog.TableSchema;
+import org.apache.seatunnel.api.table.converter.BasicTypeDefine;
+import org.apache.seatunnel.connectors.seatunnel.jdbc.catalog.utils.CatalogUtils;
+import org.apache.seatunnel.connectors.seatunnel.jdbc.internal.dialect.DatabaseIdentifier;
+import org.apache.seatunnel.connectors.seatunnel.jdbc.internal.dialect.mysql.MySqlTypeConverter;
 
 import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.lang3.StringUtils;
+
+import com.mysql.cj.MysqlType;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.Collectors;
 
-import static com.google.common.base.Preconditions.checkArgument;
-import static com.google.common.base.Preconditions.checkNotNull;
+import static org.apache.seatunnel.shade.com.google.common.base.Preconditions.checkArgument;
+import static org.apache.seatunnel.shade.com.google.common.base.Preconditions.checkNotNull;
 
 public class MysqlCreateTableSqlBuilder {
 
@@ -49,12 +55,11 @@ public class MysqlCreateTableSqlBuilder {
 
     private List<ConstraintKey> constraintKeys;
 
-    private MysqlDataTypeConvertor mysqlDataTypeConvertor;
+    private String fieldIde;
 
     private MysqlCreateTableSqlBuilder(String tableName) {
         checkNotNull(tableName, "tableName must not be null");
         this.tableName = tableName;
-        this.mysqlDataTypeConvertor = new MysqlDataTypeConvertor();
     }
 
     public static MysqlCreateTableSqlBuilder builder(
@@ -72,7 +77,8 @@ public class MysqlCreateTableSqlBuilder {
                 .charset(null)
                 .primaryKey(tableSchema.getPrimaryKey())
                 .constraintKeys(tableSchema.getConstraintKeys())
-                .addColumn(tableSchema.getColumns());
+                .addColumn(tableSchema.getColumns())
+                .fieldIde(catalogTable.getOptions().get("fieldIde"));
     }
 
     public MysqlCreateTableSqlBuilder addColumn(List<Column> columns) {
@@ -83,6 +89,11 @@ public class MysqlCreateTableSqlBuilder {
 
     public MysqlCreateTableSqlBuilder primaryKey(PrimaryKey primaryKey) {
         this.primaryKey = primaryKey;
+        return this;
+    }
+
+    public MysqlCreateTableSqlBuilder fieldIde(String fieldIde) {
+        this.fieldIde = fieldIde;
         return this;
     }
 
@@ -111,12 +122,13 @@ public class MysqlCreateTableSqlBuilder {
         return this;
     }
 
-    public String build() {
+    public String build(String catalogName) {
         List<String> sqls = new ArrayList<>();
         sqls.add(
                 String.format(
-                        "CREATE TABLE IF NOT EXISTS %s (\n%s\n)",
-                        tableName, buildColumnsIdentifySql()));
+                        "CREATE TABLE %s (\n%s\n)",
+                        CatalogUtils.quoteIdentifier(tableName, fieldIde, "`"),
+                        buildColumnsIdentifySql(catalogName)));
         if (engine != null) {
             sqls.add("ENGINE = " + engine);
         }
@@ -132,10 +144,10 @@ public class MysqlCreateTableSqlBuilder {
         return String.join(" ", sqls) + ";";
     }
 
-    private String buildColumnsIdentifySql() {
+    private String buildColumnsIdentifySql(String catalogName) {
         List<String> columnSqls = new ArrayList<>();
         for (Column column : columns) {
-            columnSqls.add("\t" + buildColumnIdentifySql(column));
+            columnSqls.add("\t" + buildColumnIdentifySql(column, catalogName));
         }
         if (primaryKey != null) {
             columnSqls.add("\t" + buildPrimaryKeySql());
@@ -145,22 +157,21 @@ public class MysqlCreateTableSqlBuilder {
                 if (StringUtils.isBlank(constraintKey.getConstraintName())) {
                     continue;
                 }
-                columnSqls.add("\t" + buildConstraintKeySql(constraintKey));
+                //                columnSqls.add("\t" + buildConstraintKeySql(constraintKey));
             }
         }
         return String.join(", \n", columnSqls);
     }
 
-    private String buildColumnIdentifySql(Column column) {
+    private String buildColumnIdentifySql(Column column, String catalogName) {
         final List<String> columnSqls = new ArrayList<>();
-        // Column name
-        columnSqls.add(column.getName());
-        // Column type
-        columnSqls.add(
-                mysqlDataTypeConvertor.toConnectorType(column.getDataType(), null).getName());
-        // Column length
-        if (column.getColumnLength() != null) {
-            columnSqls.add("(" + column.getColumnLength() + ")");
+        columnSqls.add(CatalogUtils.quoteIdentifier(column.getName(), fieldIde, "`"));
+        boolean isSupportDef = true;
+        if (StringUtils.equals(catalogName, DatabaseIdentifier.MYSQL)) {
+            columnSqls.add(column.getSourceType());
+        } else {
+            BasicTypeDefine<MysqlType> typeDefine = MySqlTypeConverter.INSTANCE.reconvert(column);
+            columnSqls.add(typeDefine.getColumnType());
         }
         // nullable
         if (column.isNullable()) {
@@ -168,14 +179,11 @@ public class MysqlCreateTableSqlBuilder {
         } else {
             columnSqls.add("NOT NULL");
         }
-        // default value
-        if (column.getDefaultValue() != null) {
-            columnSqls.add("DEFAULT '" + column.getDefaultValue() + "'");
-        }
-        // comment
+
         if (column.getComment() != null) {
             columnSqls.add("COMMENT '" + column.getComment() + "'");
         }
+
         return String.join(" ", columnSqls);
     }
 
@@ -185,7 +193,7 @@ public class MysqlCreateTableSqlBuilder {
                         .map(columnName -> "`" + columnName + "`")
                         .collect(Collectors.joining(", "));
         // add sort type
-        return String.format("PRIMARY KEY (%s)", key);
+        return String.format("PRIMARY KEY (%s)", CatalogUtils.quoteIdentifier(key, fieldIde));
     }
 
     private String buildConstraintKeySql(ConstraintKey constraintKey) {
@@ -206,7 +214,7 @@ public class MysqlCreateTableSqlBuilder {
                         .collect(Collectors.joining(", "));
         String keyName = null;
         switch (constraintType) {
-            case KEY:
+            case INDEX_KEY:
                 keyName = "KEY";
                 break;
             case UNIQUE_KEY:

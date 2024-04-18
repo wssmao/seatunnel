@@ -55,6 +55,12 @@ public class ObjectUtils {
         }
         if (minuend instanceof Integer) {
             return BigDecimal.valueOf((int) minuend).subtract(BigDecimal.valueOf((int) subtrahend));
+        } else if (minuend instanceof Short) {
+            return BigDecimal.valueOf((short) minuend)
+                    .subtract(BigDecimal.valueOf((short) subtrahend));
+        } else if (minuend instanceof Byte) {
+            return BigDecimal.valueOf((byte) minuend)
+                    .subtract(BigDecimal.valueOf((byte) subtrahend));
         } else if (minuend instanceof Long) {
             return BigDecimal.valueOf((long) minuend)
                     .subtract(BigDecimal.valueOf((long) subtrahend));
@@ -63,6 +69,8 @@ public class ObjectUtils {
                     ((BigInteger) minuend).subtract((BigInteger) subtrahend).toString());
         } else if (minuend instanceof BigDecimal) {
             return ((BigDecimal) minuend).subtract((BigDecimal) subtrahend);
+        } else if (minuend instanceof String) {
+            return BigDecimal.valueOf(Long.MAX_VALUE);
         } else {
             throw new UnsupportedOperationException(
                     String.format(

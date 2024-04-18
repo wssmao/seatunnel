@@ -17,12 +17,13 @@
 
 package org.apache.seatunnel.connectors.cdc.base.source.enumerator;
 
+import org.apache.seatunnel.shade.com.google.common.annotations.VisibleForTesting;
+
 import org.apache.seatunnel.connectors.cdc.base.config.SourceConfig;
 import org.apache.seatunnel.connectors.cdc.base.dialect.DataSourceDialect;
 import org.apache.seatunnel.connectors.cdc.base.source.enumerator.splitter.ChunkSplitter;
 import org.apache.seatunnel.connectors.cdc.base.source.enumerator.state.SnapshotPhaseState;
 import org.apache.seatunnel.connectors.cdc.base.source.event.SnapshotSplitWatermark;
-import org.apache.seatunnel.connectors.cdc.base.source.offset.Offset;
 import org.apache.seatunnel.connectors.cdc.base.source.split.SnapshotSplit;
 import org.apache.seatunnel.connectors.cdc.base.source.split.SourceSplitBase;
 
@@ -33,12 +34,20 @@ import io.debezium.relational.TableId;
 
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
+import java.util.Deque;
 import java.util.HashMap;
 import java.util.Iterator;
-import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Queue;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedDeque;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.stream.Collectors;
+
+import static org.apache.seatunnel.shade.com.google.common.base.Preconditions.checkArgument;
 
 /** Assigner for snapshot split. */
 public class SnapshotSplitAssigner<C extends SourceConfig> implements SplitAssigner {
@@ -48,12 +57,12 @@ public class SnapshotSplitAssigner<C extends SourceConfig> implements SplitAssig
 
     private final C sourceConfig;
     private final List<TableId> alreadyProcessedTables;
-    private final List<SnapshotSplit> remainingSplits;
+    private final Queue<SnapshotSplit> remainingSplits;
     private final Map<String, SnapshotSplit> assignedSplits;
-    private final Map<String, Offset> splitCompletedOffsets;
+    private final Map<String, SnapshotSplitWatermark> splitCompletedOffsets;
     private boolean assignerCompleted;
     private final int currentParallelism;
-    private final LinkedList<TableId> remainingTables;
+    private final Deque<TableId> remainingTables;
     private final boolean isRemainingTablesCheckpointed;
 
     private ChunkSplitter chunkSplitter;
@@ -107,7 +116,7 @@ public class SnapshotSplitAssigner<C extends SourceConfig> implements SplitAssig
             List<TableId> alreadyProcessedTables,
             List<SnapshotSplit> remainingSplits,
             Map<String, SnapshotSplit> assignedSplits,
-            Map<String, Offset> splitCompletedOffsets,
+            Map<String, SnapshotSplitWatermark> splitCompletedOffsets,
             boolean assignerCompleted,
             List<TableId> remainingTables,
             boolean isTableIdCaseSensitive,
@@ -116,15 +125,25 @@ public class SnapshotSplitAssigner<C extends SourceConfig> implements SplitAssig
         this.context = context;
         this.sourceConfig = context.getSourceConfig();
         this.currentParallelism = currentParallelism;
-        this.alreadyProcessedTables = alreadyProcessedTables;
-        this.remainingSplits = remainingSplits;
-        this.assignedSplits = assignedSplits;
-        this.splitCompletedOffsets = splitCompletedOffsets;
+        this.alreadyProcessedTables = Collections.synchronizedList(alreadyProcessedTables);
+        this.remainingSplits = new ConcurrentLinkedQueue(remainingSplits);
+        this.assignedSplits = new ConcurrentHashMap<>(assignedSplits);
+        this.splitCompletedOffsets = new ConcurrentHashMap<>(splitCompletedOffsets);
         this.assignerCompleted = assignerCompleted;
-        this.remainingTables = new LinkedList<>(remainingTables);
+        this.remainingTables = new ConcurrentLinkedDeque<>(remainingTables);
         this.isRemainingTablesCheckpointed = isRemainingTablesCheckpointed;
         this.isTableIdCaseSensitive = isTableIdCaseSensitive;
         this.dialect = dialect;
+
+        LOG.info("SnapshotSplitAssigner created with remaining tables: {}", this.remainingTables);
+        LOG.info(
+                "SnapshotSplitAssigner created with remaining splits: [{}]",
+                this.remainingSplits.stream()
+                        .map(SnapshotSplit::splitId)
+                        .collect(Collectors.joining(",")));
+        LOG.info(
+                "SnapshotSplitAssigner created with assigned splits: {}",
+                this.assignedSplits.keySet());
     }
 
     @Override
@@ -181,7 +200,7 @@ public class SnapshotSplitAssigner<C extends SourceConfig> implements SplitAssig
     @Override
     public void onCompletedSplits(List<SnapshotSplitWatermark> completedSplitWatermarks) {
         completedSplitWatermarks.forEach(
-                m -> this.splitCompletedOffsets.put(m.getSplitId(), m.getHighWatermark()));
+                watermark -> this.splitCompletedOffsets.put(watermark.getSplitId(), watermark));
         if (allSplitsCompleted()) {
             // Skip the waiting checkpoint when current parallelism is 1 which means we do not need
             // to care about the global output data order of snapshot splits and incremental split.
@@ -212,11 +231,15 @@ public class SnapshotSplitAssigner<C extends SourceConfig> implements SplitAssig
         SnapshotPhaseState state =
                 new SnapshotPhaseState(
                         alreadyProcessedTables,
-                        remainingSplits,
+                        remainingSplits.isEmpty()
+                                ? new ArrayList<>()
+                                : new ArrayList<>(remainingSplits),
                         assignedSplits,
                         splitCompletedOffsets,
                         assignerCompleted,
-                        remainingTables,
+                        remainingTables.isEmpty()
+                                ? new ArrayList<>()
+                                : new ArrayList<>(remainingTables),
                         isTableIdCaseSensitive,
                         true);
         // we need a complete checkpoint before mark this assigner to be completed, to wait for all
@@ -250,14 +273,6 @@ public class SnapshotSplitAssigner<C extends SourceConfig> implements SplitAssig
         return assignerCompleted;
     }
 
-    public Map<String, SnapshotSplit> getAssignedSplits() {
-        return assignedSplits;
-    }
-
-    public Map<String, Offset> getSplitCompletedOffsets() {
-        return splitCompletedOffsets;
-    }
-
     // -------------------------------------------------------------------------------------------
 
     /**
@@ -266,5 +281,29 @@ public class SnapshotSplitAssigner<C extends SourceConfig> implements SplitAssig
      */
     private boolean allSplitsCompleted() {
         return noMoreSplits() && assignedSplits.size() == splitCompletedOffsets.size();
+    }
+
+    @VisibleForTesting
+    Map<String, SnapshotSplit> getAssignedSplits() {
+        return assignedSplits;
+    }
+
+    @VisibleForTesting
+    Map<String, SnapshotSplitWatermark> getSplitCompletedOffsets() {
+        return splitCompletedOffsets;
+    }
+
+    public boolean completedSnapshotPhase(List<TableId> tableIds) {
+        checkArgument(isCompleted() && allSplitsCompleted());
+
+        for (String splitKey : new ArrayList<>(assignedSplits.keySet())) {
+            SnapshotSplit assignedSplit = assignedSplits.get(splitKey);
+            if (tableIds.contains(assignedSplit.getTableId())) {
+                assignedSplits.remove(splitKey);
+                splitCompletedOffsets.remove(assignedSplit.splitId());
+            }
+        }
+
+        return assignedSplits.isEmpty() && splitCompletedOffsets.isEmpty();
     }
 }

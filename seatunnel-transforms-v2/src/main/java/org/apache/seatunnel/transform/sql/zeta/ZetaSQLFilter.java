@@ -17,7 +17,8 @@
 
 package org.apache.seatunnel.transform.sql.zeta;
 
-import org.apache.seatunnel.common.exception.CommonErrorCode;
+import org.apache.seatunnel.api.table.type.BasicType;
+import org.apache.seatunnel.common.exception.CommonErrorCodeDeprecated;
 import org.apache.seatunnel.transform.exception.TransformException;
 
 import org.apache.commons.lang3.tuple.Pair;
@@ -42,12 +43,20 @@ import net.sf.jsqlparser.expression.operators.relational.NotEqualsTo;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public class ZetaSQLFilter {
     private final ZetaSQLFunction zetaSQLFunction;
+    private final ZetaSQLType zetaSQLType;
 
-    public ZetaSQLFilter(ZetaSQLFunction zetaSQLFunction) {
+    public ZetaSQLFilter(ZetaSQLFunction zetaSQLFunction, ZetaSQLType zetaSQLType) {
         this.zetaSQLFunction = zetaSQLFunction;
+        this.zetaSQLType = zetaSQLType;
+    }
+
+    public boolean isConditionExpr(Expression expression) {
+        return BasicType.BOOLEAN_TYPE.equals(zetaSQLType.getExpressionType(expression));
     }
 
     public boolean executeFilter(Expression whereExpr, Object[] inputFields) {
@@ -64,7 +73,15 @@ public class ZetaSQLFilter {
             return inExpr((InExpression) whereExpr, inputFields);
         }
         if (whereExpr instanceof LikeExpression) {
-            return likeExpr((LikeExpression) whereExpr, inputFields);
+            boolean isNotLike = ((LikeExpression) whereExpr).isNot();
+            // not like SQL parsing
+            if (isNotLike) {
+                return notLikeExpr((LikeExpression) whereExpr, inputFields);
+            }
+            // like SQL parsing
+            if (!isNotLike) {
+                return likeExpr((LikeExpression) whereExpr, inputFields);
+            }
         }
         if (whereExpr instanceof ComparisonOperator) {
             Pair<Object, Object> pair =
@@ -98,7 +115,7 @@ public class ZetaSQLFilter {
             return parenthesisExpr((Parenthesis) whereExpr, inputFields);
         }
         throw new TransformException(
-                CommonErrorCode.UNSUPPORTED_OPERATION,
+                CommonErrorCodeDeprecated.UNSUPPORTED_OPERATION,
                 String.format("Unsupported SQL Expression: %s ", whereExpr));
     }
 
@@ -146,15 +163,91 @@ public class ZetaSQLFilter {
     }
 
     /**
-     * Like expression filter, unsupported yet
+     * Like expression filter
      *
      * @param likeExpression like expression
      * @param inputFields input fields
      * @return filter result
      */
     private boolean likeExpr(LikeExpression likeExpression, Object[] inputFields) {
-        throw new TransformException(
-                CommonErrorCode.UNSUPPORTED_OPERATION, "Unsupported [LIKE] filter expression yet");
+        Expression leftExpr = likeExpression.getLeftExpression();
+        Object leftVal = zetaSQLFunction.computeForValue(leftExpr, inputFields);
+        if (leftVal == null) {
+            return false;
+        }
+        Expression rightExpr = likeExpression.getRightExpression();
+        Object rightVal = zetaSQLFunction.computeForValue(rightExpr, inputFields);
+        String regex = rightVal.toString();
+        if (rightVal == null && regex.length() > 0) {
+            return false;
+        }
+        String likeIdent = "%";
+        if (regex.startsWith(likeIdent)) {
+            regex = regex.replaceFirst(likeIdent, ".*");
+        }
+        if (regex.endsWith(likeIdent)) {
+            regex = regex.substring(0, regex.length() - 1) + ".*";
+        }
+        if (regex.startsWith("_")) {
+            regex = regex.replaceFirst("_", ".");
+        }
+        if (regex.endsWith("_")) {
+            regex = regex.substring(0, regex.length() - 1) + ".";
+        }
+        if (regex.length() >= 3 && regex.substring(regex.length() - 3).endsWith("_.*")) {
+            regex = regex.substring(0, regex.length() - 3) + "..*";
+        }
+        if (regex.startsWith("'") && regex.endsWith("'")) {
+            regex = regex.substring(0, regex.length() - 1).substring(1);
+        }
+        Pattern pattern = Pattern.compile(regex);
+        Matcher matcher = pattern.matcher(leftVal.toString());
+
+        return matcher.matches();
+    }
+
+    /**
+     * Not Like expression filter
+     *
+     * @param likeExpression not like expression
+     * @param inputFields input fields
+     * @return filter result
+     */
+    private boolean notLikeExpr(LikeExpression likeExpression, Object[] inputFields) {
+        Expression leftExpr = likeExpression.getLeftExpression();
+        Object leftVal = zetaSQLFunction.computeForValue(leftExpr, inputFields);
+        if (leftVal == null) {
+            return false;
+        }
+        Expression rightExpr = likeExpression.getRightExpression();
+        Object rightVal = zetaSQLFunction.computeForValue(rightExpr, inputFields);
+        String regex = rightVal.toString();
+        if (rightVal == null && regex.length() > 0) {
+            return false;
+        }
+        String likeIdent = "%";
+        if (regex.startsWith(likeIdent)) {
+            regex = regex.replaceFirst(likeIdent, ".*");
+        }
+        if (regex.endsWith(likeIdent)) {
+            regex = regex.substring(0, regex.length() - 1) + ".*";
+        }
+        if (regex.startsWith("_")) {
+            regex = regex.replaceFirst("_", ".");
+        }
+        if (regex.endsWith("_")) {
+            regex = regex.substring(0, regex.length() - 1) + ".";
+        }
+        if (regex.length() >= 3 && regex.substring(regex.length() - 3).endsWith("_.*")) {
+            regex = regex.substring(0, regex.length() - 3) + "..*";
+        }
+        if (regex.startsWith("'") && regex.endsWith("'")) {
+            regex = regex.substring(0, regex.length() - 1).substring(1);
+        }
+        Pattern pattern = Pattern.compile(regex);
+        Matcher matcher = pattern.matcher(leftVal.toString());
+
+        return !matcher.matches();
     }
 
     private Pair<Object, Object> executeComparisonOperator(
@@ -166,7 +259,7 @@ public class ZetaSQLFilter {
         return Pair.of(leftVal, rightVal);
     }
 
-    private boolean equalsToExpr(Pair<Object, Object> pair) {
+    boolean equalsToExpr(Pair<Object, Object> pair) {
         Object leftVal = pair.getLeft();
         Object rightVal = pair.getRight();
         if (leftVal == null || rightVal == null) {
@@ -212,7 +305,7 @@ public class ZetaSQLFilter {
             return ((LocalTime) leftVal).isAfter((LocalTime) rightVal);
         }
         throw new TransformException(
-                CommonErrorCode.UNSUPPORTED_OPERATION,
+                CommonErrorCodeDeprecated.UNSUPPORTED_OPERATION,
                 String.format(
                         "Filed types not matched, left is: %s, right is: %s ",
                         leftVal.getClass().getSimpleName(), rightVal.getClass().getSimpleName()));
@@ -242,7 +335,7 @@ public class ZetaSQLFilter {
             return ((LocalTime) leftVal).isAfter((LocalTime) rightVal) || leftVal.equals(rightVal);
         }
         throw new TransformException(
-                CommonErrorCode.UNSUPPORTED_OPERATION,
+                CommonErrorCodeDeprecated.UNSUPPORTED_OPERATION,
                 String.format(
                         "Filed types not matched, left is: %s, right is: %s ",
                         leftVal.getClass().getSimpleName(), rightVal.getClass().getSimpleName()));
@@ -270,7 +363,7 @@ public class ZetaSQLFilter {
             return ((String) leftVal).compareTo((String) rightVal) < 0;
         }
         throw new TransformException(
-                CommonErrorCode.UNSUPPORTED_OPERATION,
+                CommonErrorCodeDeprecated.UNSUPPORTED_OPERATION,
                 String.format(
                         "Filed types not matched, left is: %s, right is: %s ",
                         leftVal.getClass().getSimpleName(), rightVal.getClass().getSimpleName()));
@@ -300,7 +393,7 @@ public class ZetaSQLFilter {
             return ((String) leftVal).compareTo((String) rightVal) <= 0;
         }
         throw new TransformException(
-                CommonErrorCode.UNSUPPORTED_OPERATION,
+                CommonErrorCodeDeprecated.UNSUPPORTED_OPERATION,
                 String.format(
                         "Filed types not matched, left is: %s, right is: %s ",
                         leftVal.getClass().getSimpleName(), rightVal.getClass().getSimpleName()));

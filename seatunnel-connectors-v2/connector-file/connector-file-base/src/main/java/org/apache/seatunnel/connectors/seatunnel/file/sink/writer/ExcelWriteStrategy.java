@@ -18,8 +18,7 @@
 package org.apache.seatunnel.connectors.seatunnel.file.sink.writer;
 
 import org.apache.seatunnel.api.table.type.SeaTunnelRow;
-import org.apache.seatunnel.common.exception.CommonErrorCode;
-import org.apache.seatunnel.connectors.seatunnel.file.exception.FileConnectorException;
+import org.apache.seatunnel.common.exception.CommonError;
 import org.apache.seatunnel.connectors.seatunnel.file.sink.config.FileSinkConfig;
 import org.apache.seatunnel.connectors.seatunnel.file.sink.util.ExcelGenerator;
 
@@ -28,15 +27,14 @@ import org.apache.hadoop.fs.FSDataOutputStream;
 import lombok.NonNull;
 
 import java.io.IOException;
-import java.util.HashMap;
-import java.util.Map;
+import java.util.LinkedHashMap;
 
 public class ExcelWriteStrategy extends AbstractWriteStrategy {
-    private final Map<String, ExcelGenerator> beingWrittenWriter;
+    private final LinkedHashMap<String, ExcelGenerator> beingWrittenWriter;
 
     public ExcelWriteStrategy(FileSinkConfig fileSinkConfig) {
         super(fileSinkConfig);
-        this.beingWrittenWriter = new HashMap<>();
+        this.beingWrittenWriter = new LinkedHashMap<>();
     }
 
     @Override
@@ -52,17 +50,17 @@ public class ExcelWriteStrategy extends AbstractWriteStrategy {
         this.beingWrittenWriter.forEach(
                 (k, v) -> {
                     try {
-                        fileSystemUtils.createFile(k);
-                        FSDataOutputStream fileOutputStream = fileSystemUtils.getOutputStream(k);
+                        hadoopFileSystemProxy.createFile(k);
+                        FSDataOutputStream fileOutputStream =
+                                hadoopFileSystemProxy.getOutputStream(k);
                         v.flushAndCloseExcel(fileOutputStream);
                         fileOutputStream.close();
                     } catch (IOException e) {
-                        throw new FileConnectorException(
-                                CommonErrorCode.FILE_OPERATION_FAILED,
-                                "can not get output file stream");
+                        throw CommonError.fileOperationFailed("ExcelFile", "write", k, e);
                     }
                     needMoveFiles.put(k, getTargetLocation(k));
                 });
+        beingWrittenWriter.clear();
     }
 
     private ExcelGenerator getOrCreateExcelGenerator(@NonNull String filePath) {

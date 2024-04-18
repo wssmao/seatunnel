@@ -17,9 +17,12 @@
 
 package org.apache.seatunnel.connectors.seatunnel.cdc.sqlserver.source.utils;
 
+import org.apache.seatunnel.api.table.catalog.CatalogTable;
 import org.apache.seatunnel.common.utils.SeaTunnelException;
+import org.apache.seatunnel.connectors.cdc.base.utils.CatalogTableUtils;
 
 import io.debezium.connector.sqlserver.SqlServerConnection;
+import io.debezium.connector.sqlserver.SqlServerConnectorConfig;
 import io.debezium.jdbc.JdbcConnection;
 import io.debezium.relational.Table;
 import io.debezium.relational.TableId;
@@ -28,19 +31,21 @@ import io.debezium.relational.history.TableChanges;
 import io.debezium.relational.history.TableChanges.TableChange;
 
 import java.sql.SQLException;
-import java.util.HashMap;
-import java.util.HashSet;
 import java.util.Map;
-import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 /** A component used to get schema by table path. */
 public class SqlServerSchema {
 
+    private final SqlServerConnectorConfig connectorConfig;
     private final Map<TableId, TableChange> schemasByTableId;
+    private final Map<TableId, CatalogTable> tableMap;
 
-    public SqlServerSchema() {
+    public SqlServerSchema(
+            SqlServerConnectorConfig connectorConfig, Map<TableId, CatalogTable> tableMap) {
         this.schemasByTableId = new ConcurrentHashMap<>();
+        this.connectorConfig = connectorConfig;
+        this.tableMap = tableMap;
     }
 
     public TableChange getTableSchema(JdbcConnection jdbc, TableId tableId) {
@@ -48,36 +53,42 @@ public class SqlServerSchema {
         TableChange schema = schemasByTableId.get(tableId);
         if (schema == null) {
             schema = readTableSchema(jdbc, tableId);
-            schemasByTableId.put(tableId, schema);
         }
         return schema;
     }
 
     private TableChange readTableSchema(JdbcConnection jdbc, TableId tableId) {
         SqlServerConnection sqlServerConnection = (SqlServerConnection) jdbc;
-        Set<TableId> tableIdSet = new HashSet<>();
-        tableIdSet.add(tableId);
-
-        final Map<TableId, TableChange> tableChangeMap = new HashMap<>();
         Tables tables = new Tables();
-        tables.overwriteTable(tables.editOrCreateTable(tableId).create());
-
         try {
             sqlServerConnection.readSchema(
-                    tables, tableId.catalog(), tableId.schema(), null, null, false);
-            Table table = tables.forTable(tableId);
-            TableChange tableChange = new TableChange(TableChanges.TableChangeType.CREATE, table);
-            tableChangeMap.put(tableId, tableChange);
+                    tables,
+                    tableId.catalog(),
+                    tableId.schema(),
+                    connectorConfig.getTableFilters().dataCollectionFilter(),
+                    null,
+                    false);
+            for (TableId id : tables.tableIds()) {
+                if (tableMap.containsKey(id)) {
+                    Table table =
+                            CatalogTableUtils.mergeCatalogTableConfig(
+                                    tables.forTable(id), tableMap.get(id));
+                    TableChanges.TableChange tableChange =
+                            new TableChanges.TableChange(
+                                    TableChanges.TableChangeType.CREATE, table);
+                    schemasByTableId.put(id, tableChange);
+                }
+            }
         } catch (SQLException e) {
             throw new SeaTunnelException(
                     String.format("Failed to read schema for table %s ", tableId), e);
         }
 
-        if (!tableChangeMap.containsKey(tableId)) {
+        if (!schemasByTableId.containsKey(tableId)) {
             throw new SeaTunnelException(
                     String.format("Can't obtain schema for table %s ", tableId));
         }
 
-        return tableChangeMap.get(tableId);
+        return schemasByTableId.get(tableId);
     }
 }

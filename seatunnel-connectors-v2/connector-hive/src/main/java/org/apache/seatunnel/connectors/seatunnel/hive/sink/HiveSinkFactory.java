@@ -36,6 +36,9 @@ public class HiveSinkFactory implements TableSinkFactory {
         return OptionRule.builder()
                 .required(HiveConfig.TABLE_NAME)
                 .required(HiveConfig.METASTORE_URI)
+                .optional(HiveConfig.ABORT_DROP_PARTITION_METADATA)
+                .optional(HiveConfig.HADOOP_CONF)
+                .optional(HiveConfig.HADOOP_CONF_PATH)
                 .build();
     }
 }

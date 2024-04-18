@@ -17,6 +17,9 @@
 
 package org.apache.seatunnel.connectors.cdc.base.source.enumerator;
 
+import org.apache.seatunnel.shade.com.google.common.annotations.VisibleForTesting;
+
+import org.apache.seatunnel.api.table.type.SeaTunnelDataType;
 import org.apache.seatunnel.connectors.cdc.base.config.SourceConfig;
 import org.apache.seatunnel.connectors.cdc.base.source.enumerator.state.IncrementalPhaseState;
 import org.apache.seatunnel.connectors.cdc.base.source.event.SnapshotSplitWatermark;
@@ -44,6 +47,8 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 
+import static org.apache.seatunnel.shade.com.google.common.base.Preconditions.checkArgument;
+
 /** Assigner for incremental split. */
 public class IncrementalSplitAssigner<C extends SourceConfig> implements SplitAssigner {
 
@@ -70,6 +75,7 @@ public class IncrementalSplitAssigner<C extends SourceConfig> implements SplitAs
     private final Map<String, IncrementalSplit> assignedSplits = new HashMap<>();
 
     private boolean startWithSnapshotMinimumOffset = true;
+    private SeaTunnelDataType checkpointDataType;
 
     public IncrementalSplitAssigner(
             SplitAssigner.Context<C> context,
@@ -124,8 +130,7 @@ public class IncrementalSplitAssigner<C extends SourceConfig> implements SplitAs
         // do nothing
         completedSplitWatermarks.forEach(
                 watermark ->
-                        context.getSplitCompletedOffsets()
-                                .put(watermark.getSplitId(), watermark.getHighWatermark()));
+                        context.getSplitCompletedOffsets().put(watermark.getSplitId(), watermark));
     }
 
     @Override
@@ -153,6 +158,7 @@ public class IncrementalSplitAssigner<C extends SourceConfig> implements SplitAs
                                 }
                                 tableWatermarks.put(tableId, startupOffset);
                             }
+                            checkpointDataType = incrementalSplit.getCheckpointDataType();
                         });
         if (!tableWatermarks.isEmpty()) {
             this.startWithSnapshotMinimumOffset = false;
@@ -195,21 +201,31 @@ public class IncrementalSplitAssigner<C extends SourceConfig> implements SplitAs
 
     private IncrementalSplit createIncrementalSplit(
             List<TableId> capturedTables, int index, boolean startWithSnapshotMinimumOffset) {
+        C sourceConfig = context.getSourceConfig();
         final List<SnapshotSplit> assignedSnapshotSplit =
                 context.getAssignedSnapshotSplit().values().stream()
                         .filter(split -> capturedTables.contains(split.getTableId()))
                         .sorted(Comparator.comparing(SourceSplitBase::splitId))
                         .collect(Collectors.toList());
 
-        Map<String, Offset> splitCompletedOffsets = context.getSplitCompletedOffsets();
+        Map<String, SnapshotSplitWatermark> splitCompletedOffsets =
+                context.getSplitCompletedOffsets();
         final List<CompletedSnapshotSplitInfo> completedSnapshotSplitInfos = new ArrayList<>();
         Offset minOffset = null;
         for (SnapshotSplit split : assignedSnapshotSplit) {
-            Offset changeLogOffset = splitCompletedOffsets.get(split.splitId());
+            SnapshotSplitWatermark splitWatermark = splitCompletedOffsets.get(split.splitId());
             if (startWithSnapshotMinimumOffset) {
                 // find the min offset of change log
-                if (minOffset == null || changeLogOffset.isBefore(minOffset)) {
-                    minOffset = changeLogOffset;
+                Offset splitOffset =
+                        sourceConfig.isExactlyOnce()
+                                ? splitWatermark.getHighWatermark()
+                                : splitWatermark.getLowWatermark();
+                if (minOffset == null || splitOffset.isBefore(minOffset)) {
+                    minOffset = splitOffset;
+                    LOG.debug(
+                            "Find the min offset {} of change log in split {}",
+                            splitOffset,
+                            splitWatermark);
                 }
             }
             completedSnapshotSplitInfos.add(
@@ -219,22 +235,47 @@ public class IncrementalSplitAssigner<C extends SourceConfig> implements SplitAs
                             split.getSplitKeyType(),
                             split.getSplitStart(),
                             split.getSplitEnd(),
-                            changeLogOffset));
+                            splitWatermark));
         }
         for (TableId tableId : capturedTables) {
             Offset watermark = tableWatermarks.get(tableId);
             if (minOffset == null || (watermark != null && watermark.isBefore(minOffset))) {
                 minOffset = watermark;
+                LOG.debug(
+                        "Find the min offset {} of change log in table-watermarks {}",
+                        watermark,
+                        tableId);
             }
         }
-        C sourceConfig = context.getSourceConfig();
+        Offset incrementalSplitStartOffset =
+                minOffset != null
+                        ? minOffset
+                        : sourceConfig.getStartupConfig().getStartupOffset(offsetFactory);
         return new IncrementalSplit(
                 String.format(INCREMENTAL_SPLIT_ID, index),
                 capturedTables,
-                minOffset != null
-                        ? minOffset
-                        : sourceConfig.getStartupConfig().getStartupOffset(offsetFactory),
+                incrementalSplitStartOffset,
                 sourceConfig.getStopConfig().getStopOffset(offsetFactory),
-                completedSnapshotSplitInfos);
+                completedSnapshotSplitInfos,
+                checkpointDataType);
+    }
+
+    @VisibleForTesting
+    void setSplitAssigned(boolean assigned) {
+        this.splitAssigned = assigned;
+    }
+
+    public boolean completedSnapshotPhase(List<TableId> tableIds) {
+        checkArgument(splitAssigned && noMoreSplits());
+
+        for (String splitKey : new ArrayList<>(context.getAssignedSnapshotSplit().keySet())) {
+            SnapshotSplit assignedSplit = context.getAssignedSnapshotSplit().get(splitKey);
+            if (tableIds.contains(assignedSplit.getTableId())) {
+                context.getAssignedSnapshotSplit().remove(splitKey);
+                context.getSplitCompletedOffsets().remove(assignedSplit.splitId());
+            }
+        }
+        return context.getAssignedSnapshotSplit().isEmpty()
+                && context.getSplitCompletedOffsets().isEmpty();
     }
 }

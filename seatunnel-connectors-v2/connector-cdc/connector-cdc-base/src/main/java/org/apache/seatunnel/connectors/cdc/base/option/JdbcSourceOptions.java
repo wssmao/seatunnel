@@ -19,12 +19,13 @@ package org.apache.seatunnel.connectors.cdc.base.option;
 
 import org.apache.seatunnel.api.configuration.Option;
 import org.apache.seatunnel.api.configuration.Options;
+import org.apache.seatunnel.connectors.cdc.base.config.JdbcSourceTableConfig;
 import org.apache.seatunnel.connectors.cdc.base.source.IncrementalSource;
 
+import java.time.ZoneId;
 import java.util.List;
 
 /** Configurations for {@link IncrementalSource} of JDBC data source. */
-@SuppressWarnings("checkstyle:MagicNumber")
 public class JdbcSourceOptions extends SourceOptions {
 
     public static final Option<String> HOSTNAME =
@@ -61,8 +62,10 @@ public class JdbcSourceOptions extends SourceOptions {
     public static final Option<String> SERVER_TIME_ZONE =
             Options.key("server-time-zone")
                     .stringType()
-                    .defaultValue("UTC")
-                    .withDescription("The session time zone in database server.");
+                    .defaultValue(ZoneId.systemDefault().getId())
+                    .withDescription(
+                            "The session time zone in database server."
+                                    + "If not set, then ZoneId.systemDefault() is used to determine the server time zone");
 
     public static final Option<String> SERVER_ID =
             Options.key("server-id")
@@ -75,7 +78,7 @@ public class JdbcSourceOptions extends SourceOptions {
                                     + "currently-running database processes in the MySQL cluster. This connector"
                                     + " joins the MySQL  cluster as another server (with this unique ID) "
                                     + "so it can read the binlog. By default, a random number is generated between"
-                                    + " 5400 and 6400, though we recommend setting an explicit value.");
+                                    + " 6500 and 2,148,492,146, though we recommend setting an explicit value.");
 
     public static final Option<Long> CONNECT_TIMEOUT_MS =
             Options.key("connect.timeout.ms")
@@ -139,4 +142,17 @@ public class JdbcSourceOptions extends SourceOptions {
                                     + "The value represents the denominator of the sampling rate fraction. "
                                     + "For example, a value of 1000 means a sampling rate of 1/1000. "
                                     + "This parameter is used when the sample sharding strategy is triggered.");
+
+    public static final Option<List<JdbcSourceTableConfig>> TABLE_NAMES_CONFIG =
+            Options.key("table-names-config")
+                    .listType(JdbcSourceTableConfig.class)
+                    .noDefaultValue()
+                    .withDescription(
+                            "Config table configs. Example: "
+                                    + "["
+                                    + "   {"
+                                    + "       \"table\": \"db1.schema1.table1\","
+                                    + "       \"primaryKeys\": [\"key1\",\"key2\"]"
+                                    + "   }"
+                                    + "]");
 }

@@ -26,8 +26,8 @@ import org.bson.BsonDocument;
 import org.bson.BsonValue;
 
 import static org.apache.seatunnel.api.table.type.SqlType.STRING;
-import static org.apache.seatunnel.common.exception.CommonErrorCode.ILLEGAL_ARGUMENT;
-import static org.apache.seatunnel.common.exception.CommonErrorCode.UNSUPPORTED_OPERATION;
+import static org.apache.seatunnel.common.exception.CommonErrorCodeDeprecated.ILLEGAL_ARGUMENT;
+import static org.apache.seatunnel.common.exception.CommonErrorCodeDeprecated.UNSUPPORTED_OPERATION;
 
 public class DocumentRowDataDeserializer implements DocumentDeserializer<SeaTunnelRow> {
 
@@ -37,10 +37,10 @@ public class DocumentRowDataDeserializer implements DocumentDeserializer<SeaTunn
 
     private final BsonToRowDataConverters bsonConverters;
 
-    private final Boolean flatSyncString;
+    private final boolean flatSyncString;
 
     public DocumentRowDataDeserializer(
-            String[] fieldNames, SeaTunnelDataType<?> dataTypes, Boolean flatSyncString) {
+            String[] fieldNames, SeaTunnelDataType<?> dataTypes, boolean flatSyncString) {
         if (fieldNames == null || fieldNames.length < 1) {
             throw new MongodbConnectorException(ILLEGAL_ARGUMENT, "fieldName is empty");
         }

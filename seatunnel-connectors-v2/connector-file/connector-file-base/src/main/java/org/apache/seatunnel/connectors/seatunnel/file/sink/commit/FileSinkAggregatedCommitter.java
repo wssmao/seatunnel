@@ -18,23 +18,24 @@
 package org.apache.seatunnel.connectors.seatunnel.file.sink.commit;
 
 import org.apache.seatunnel.api.sink.SinkAggregatedCommitter;
-import org.apache.seatunnel.connectors.seatunnel.file.sink.util.FileSystemUtils;
+import org.apache.seatunnel.connectors.seatunnel.file.config.HadoopConf;
+import org.apache.seatunnel.connectors.seatunnel.file.hadoop.HadoopFileSystemProxy;
 
 import lombok.extern.slf4j.Slf4j;
 
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
 @Slf4j
 public class FileSinkAggregatedCommitter
         implements SinkAggregatedCommitter<FileCommitInfo, FileAggregatedCommitInfo> {
-    protected final FileSystemUtils fileSystemUtils;
+    protected HadoopFileSystemProxy hadoopFileSystemProxy;
 
-    public FileSinkAggregatedCommitter(FileSystemUtils fileSystemUtils) {
-        this.fileSystemUtils = fileSystemUtils;
+    public FileSinkAggregatedCommitter(HadoopConf hadoopConf) {
+        this.hadoopFileSystemProxy = new HadoopFileSystemProxy(hadoopConf);
     }
 
     @Override
@@ -44,18 +45,18 @@ public class FileSinkAggregatedCommitter
         aggregatedCommitInfos.forEach(
                 aggregatedCommitInfo -> {
                     try {
-                        for (Map.Entry<String, Map<String, String>> entry :
+                        for (Map.Entry<String, LinkedHashMap<String, String>> entry :
                                 aggregatedCommitInfo.getTransactionMap().entrySet()) {
                             for (Map.Entry<String, String> mvFileEntry :
                                     entry.getValue().entrySet()) {
                                 // first rename temp file
-                                fileSystemUtils.renameFile(
+                                hadoopFileSystemProxy.renameFile(
                                         mvFileEntry.getKey(), mvFileEntry.getValue(), true);
                             }
                             // second delete transaction directory
-                            fileSystemUtils.deleteFile(entry.getKey());
+                            hadoopFileSystemProxy.deleteFile(entry.getKey());
                         }
-                    } catch (Exception e) {
+                    } catch (Throwable e) {
                         log.error(
                                 "commit aggregatedCommitInfo error, aggregatedCommitInfo = {} ",
                                 aggregatedCommitInfo,
@@ -77,13 +78,14 @@ public class FileSinkAggregatedCommitter
         if (commitInfos == null || commitInfos.size() == 0) {
             return null;
         }
-        Map<String, Map<String, String>> aggregateCommitInfo = new HashMap<>();
-        Map<String, List<String>> partitionDirAndValuesMap = new HashMap<>();
+        LinkedHashMap<String, LinkedHashMap<String, String>> aggregateCommitInfo =
+                new LinkedHashMap<>();
+        LinkedHashMap<String, List<String>> partitionDirAndValuesMap = new LinkedHashMap<>();
         commitInfos.forEach(
                 commitInfo -> {
-                    Map<String, String> needMoveFileMap =
+                    LinkedHashMap<String, String> needMoveFileMap =
                             aggregateCommitInfo.computeIfAbsent(
-                                    commitInfo.getTransactionDir(), k -> new HashMap<>());
+                                    commitInfo.getTransactionDir(), k -> new LinkedHashMap<>());
                     needMoveFileMap.putAll(commitInfo.getNeedMoveFiles());
                     if (commitInfo.getPartitionDirAndValuesMap() != null
                             && !commitInfo.getPartitionDirAndValuesMap().isEmpty()) {
@@ -109,19 +111,19 @@ public class FileSinkAggregatedCommitter
         aggregatedCommitInfos.forEach(
                 aggregatedCommitInfo -> {
                     try {
-                        for (Map.Entry<String, Map<String, String>> entry :
+                        for (Map.Entry<String, LinkedHashMap<String, String>> entry :
                                 aggregatedCommitInfo.getTransactionMap().entrySet()) {
                             // rollback the file
                             for (Map.Entry<String, String> mvFileEntry :
                                     entry.getValue().entrySet()) {
-                                if (fileSystemUtils.fileExist(mvFileEntry.getValue())
-                                        && !fileSystemUtils.fileExist(mvFileEntry.getKey())) {
-                                    fileSystemUtils.renameFile(
+                                if (hadoopFileSystemProxy.fileExist(mvFileEntry.getValue())
+                                        && !hadoopFileSystemProxy.fileExist(mvFileEntry.getKey())) {
+                                    hadoopFileSystemProxy.renameFile(
                                             mvFileEntry.getValue(), mvFileEntry.getKey(), true);
                                 }
                             }
                             // delete the transaction dir
-                            fileSystemUtils.deleteFile(entry.getKey());
+                            hadoopFileSystemProxy.deleteFile(entry.getKey());
                         }
                     } catch (Exception e) {
                         log.error("abort aggregatedCommitInfo error ", e);
@@ -135,5 +137,7 @@ public class FileSinkAggregatedCommitter
      * @throws IOException throw IOException when close failed.
      */
     @Override
-    public void close() throws IOException {}
+    public void close() throws IOException {
+        hadoopFileSystemProxy.close();
+    }
 }
