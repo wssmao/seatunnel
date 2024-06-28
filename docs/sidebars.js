@@ -90,6 +90,7 @@ const sidebars = {
                 "concept/connector-v2-features",
                 'concept/schema-feature',
                 'concept/JobEnvConfig',
+                'concept/sql-config',
                 'concept/speed-limit',
                 'concept/event-listener'
             ]
@@ -177,7 +178,8 @@ const sidebars = {
                 "seatunnel-engine/checkpoint-storage",
                 "seatunnel-engine/rest-api",
                 "seatunnel-engine/tcp",
-                "seatunnel-engine/engine-jar-storage-mode"
+                "seatunnel-engine/engine-jar-storage-mode",
+                "seatunnel-engine/resource-isolation",
             ]
         },
         {
